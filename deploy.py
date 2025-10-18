@@ -117,25 +117,50 @@ def click_extract(evt: gr.SelectData, image_pil, seg, min_area, feather):
 
 # ====== 4) ÁP DỤNG SỬA MASK (SKETCH) LÊN OBJECT ======
 def apply_sketch(stashed_rgba_obj, sketch_data):
-    if stashed_rgba_obj is None or sketch_data is None:
+    """
+    Áp dụng nét vẽ từ Sketchpad (Trắng=Thêm, Đen=Xóa) vào alpha channel của object.
+    """
+    if stashed_rgba_obj is None:
         return None, None
 
-    rgba = stashed_rgba_obj
-    H,W,_ = rgba.shape
-    try:
-        sketch_mask = np.array(sketch_data["mask"].convert("L")).astype(np.uint8)
-    except Exception:
-        sketch_mask = np.zeros((H,W), dtype=np.uint8)
+    rgba = stashed_rgba_obj.copy()
+    alpha = rgba[..., 3] # Lấy kênh alpha (mask) gốc
 
-    alpha = rgba[..., 3].copy()
-    add_region = (sketch_mask > 0)
-    alpha[add_region] = 255
+    # Chỉ xử lý nếu người dùng có vẽ
+    if sketch_data is not None:
+        try:
+            # LẤY DỮ LIỆU NÉT VẼ TỪ SKETCHPAD
+            # sketch_data['composite'] là một numpy array (H, W, 4)
+            composite_np = sketch_data['composite']
+            
+            # Chỉ lấy 3 kênh màu RGB để kiểm tra màu cọ (trắng/đen)
+            sketch_rgb = composite_np[..., :3]
+
+            # Vùng vẽ màu trắng (RGB > 200) được coi là vùng "THÊM"
+            add_mask = np.all(sketch_rgb > 200, axis=-1)
+            
+            # Vùng vẽ màu đen (RGB < 50) được coi là vùng "XÓA"
+            erase_mask = np.all(sketch_rgb < 50, axis=-1)
+
+            # Cập nhật kênh alpha
+            alpha[add_mask] = 255  # Thêm vào mask (làm cho nó đục hoàn toàn)
+            alpha[erase_mask] = 0    # Xóa khỏi mask (làm cho nó trong suốt)
+            
+        except Exception as e:
+            # Nếu có lỗi hoặc không có nét vẽ, bỏ qua
+            print(f"Không có dữ liệu vẽ hoặc có lỗi: {e}")
+            pass
+
+    # Tạo ảnh RGBA mới với kênh alpha đã được chỉnh sửa
     new_rgba = rgba.copy()
     new_rgba[..., 3] = alpha
+    
+    # Lưu file tạm để người dùng có thể tải về
     path_rgba = save_temp_png(new_rgba)
     path_mask = save_temp_png(alpha)
+    
     return to_pil(new_rgba), [path_rgba, path_mask]
-
+    
 # ====== UI ======
 with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut – Semantic Segmentation") as demo:
     gr.Markdown("## ClassCut – Semantic Segmentation (Giao diện tối ưu)")
@@ -169,7 +194,16 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut – Semantic Segmentation
                 with gr.TabItem("Vật thể (PNG)"):
                     cut_out = gr.Image(label="Vật thể đã tách (RGBA)", height=400, interactive=False)
                 with gr.TabItem("Chỉnh sửa Mask"):
-                    mask_canvas = gr.Sketchpad(label="4. Vẽ thêm vào vùng muốn giữ lại", height=400)
+                    # Cập nhật Sketchpad để có cọ trắng/đen
+                    # Sửa trong file deploy.py
+
+                    mask_canvas = gr.Sketchpad(
+                        label="4. Chỉnh sửa mask: Dùng cọ TRẮNG để thêm, cọ ĐEN để xóa",
+                        height=400,
+                        brush=gr.Brush(colors=["#FFFFFF", "#000000"], color_mode="fixed"),
+                        # XÓA DÒNG NÀY ĐI:
+                        # brush_color="#FFFFFF" 
+                    )
             
             btn_apply = gr.Button("5. Áp dụng chỉnh sửa & Tạo file", variant="primary")
             files_out = gr.Files(label="Tệp đã xuất: [object_rgba.png, mask.png]")

@@ -141,6 +141,11 @@ def click_extract(evt: gr.SelectData, image_pil, seg, min_area, feather):
     Chuỗi thông tin text
     Mảng RGBA gốc (để xử lý thêm nếu cần)
     """
+    """
+    output_pil, được gán cho cut_out
+    output_pil, được gán cho mask_canvas
+
+    """
     return output_pil, output_pil, info, rgba_crop
 
 # ====== 4) ÁP DỤNG SỬA MASK (SKETCH) LÊN OBJECT ======
@@ -190,7 +195,12 @@ def apply_sketch(stashed_rgba_obj, sketch_data):
     return to_pil(new_rgba), [path_rgba, path_mask]
     
 # ====== UI ======
-with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation") as demo:
+# (Refactor theo yêu cầu: bỏ tuỳ chọn bộ lọc, bỏ bảng chọn class, 
+# chuyển "Kết quả Segmentation" sang Cột 1; Cột 2 hiển thị object + chế độ vẽ; 
+# Cột 3 hiển thị khu vực chỉnh sửa mask và OUTPUT sau chỉnh sửa)
+with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation", css="""
+#maskpad canvas { width: 100% !important; height: 100% !important; object-fit: contain; }
+""") as demo:
     gr.Markdown("## ClassCut - Semantic Segmentation ")
 
     #  gr.State() dùng để lưu dữ liệu tạm giữa các bước tương tác (không hiển thị ra ngoài).
@@ -198,73 +208,53 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation")
     state_img = gr.State()  # kết quả segmentation (mask 1 kênh)
     state_rgba_obj = gr.State() # object RGBA sau khi tách (để truyền qua Sketchpad)
 
-    # Bố cục 3 cột chính
+    # Ẩn cấu hình lọc bằng state mặc định (theo yêu cầu bỏ UI):
+    MIN_AREA_DEFAULT = 500
+    FEATHER_DEFAULT = 1.0
+    min_area_state = gr.State(MIN_AREA_DEFAULT)
+    feather_state = gr.State(FEATHER_DEFAULT)
+
     """
-    Cột 1: nhập ảnh & thiết lập
-    Cột 2: xem segmentation & chọn class hiển thị
-    Cột 3: xem object, chỉnh mask, xuất file
+    Bố cục 3 cột:
+    - Cột 1: Input + nút chạy + Kết quả Segmentation (click để tách)
+    - Cột 2: Vật thể đã tách (RGBA) + Output sau chỉnh sửa (Preview) + Files
+    - Cột 3: Khu vực chỉnh sửa mask (Sketchpad) + Chế độ vẽ + nút Áp dụng
     """
     with gr.Row(equal_height=False):
-        
-        # --- CỘT 1: INPUT & CÀI ĐẶT ---
-        with gr.Column(scale=2, min_width=300):
+        # --- CỘT 1: INPUT & KẾT QUẢ SEGMENTATION ---
+        with gr.Column(scale=3, min_width=360):
             img_in = gr.Image(type="pil", label="1. Tải ảnh gốc lên")
             btn_run = gr.Button("2. Chạy Segmentation", variant="primary")
-            #img_in: ảnh gốc do người dùng upload (type="pil").
-            #btn_run: nút bấm để chạy mô hình segmentation.
+            seg_vis = gr.Image(label="3. Kết quả Segmentation (Click vào ảnh để tách vật thể)", height=420)
 
-            with gr.Accordion("Tùy chọn và bộ lọc", open=True):
-                opacity = gr.Slider(0.0, 1.0, 0.55, step=0.05, label="Độ mờ của lớp phủ")
-                min_area = gr.Slider(0, 20000, 500, step=50, label="Diện tích tối thiểu (lọc nhiễu)")
-                feather = gr.Slider(0.0, 6.0, 1.0, step=0.5, label="Làm mềm biên (Feather σ)")
-            # Các slider điều chỉnh tham số:
-                # opacity → độ trong suốt khi hiển thị segmentation overlay
-                # min_area → bỏ qua vật thể nhỏ (lọc nhiễu)
-                # feather → làm mềm biên khi tách object
-
-        # --- CỘT 2: KẾT QUẢ & TƯƠNG TÁC ---
+        # --- CỘT 2: CHỈNH SỬA MASK & OUTPUT ---
         with gr.Column(scale=3):
-            seg_vis = gr.Image(label="3. Kết quả Segmentation (Click vào ảnh để tách vật thể)", height=500) # seg_vis: nơi hiển thị ảnh segmentation kết quả (overlay). Người dùng click lên ảnh này để chọn và tách object.
-            visible = gr.CheckboxGroup(CLASSES, label="Hiển thị các lớp (class)", value=CLASSES)    # visible: danh sách class (checkbox group) — chọn class nào hiển thị (ẩn/bật từng loại object).
+            mask_canvas = gr.Sketchpad(
+                label="5. Chỉnh sửa mask: Dùng cọ TRẮNG để thêm, ĐEN để xoá",
+                height=360,
+                brush=gr.Brush(colors=["#FFFFFF"], color_mode="fixed"),  # mặc định TRẮNG = Draw
+            )
+            with gr.Row():
+                mode = gr.Radio(
+                    choices=["Draw (Thêm)", "Erase (Xoá)"],
+                    value="Draw (Thêm)",
+                    label="Chế độ vẽ"
+                )
+            btn_apply = gr.Button("6. Áp dụng chỉnh sửa & Tạo file", variant="primary")
 
-        # --- CỘT 3: CHỈNH SỬA & XUẤT FILE ---
         with gr.Column(scale=3):
-            info = gr.Markdown("...")   # info: hiển thị thông tin object đã tách (class, diện tích, bounding box…).
-            with gr.Tabs():
-                with gr.TabItem("Vật thể (PNG)"):
-                    cut_out = gr.Image(label="Vật thể đã tách (RGBA)", height=400, interactive=False)
-
-                with gr.TabItem("Chỉnh sửa Mask"):
-                    with gr.Row():
-                        btn_draw = gr.Button("Draw (Thêm)", variant="primary")
-                        btn_erase = gr.Button("Erase (Xoá)", variant="secondary")
-
-                    mask_canvas = gr.Sketchpad(
-                        label="4. Chỉnh sửa mask: Dùng cọ TRẮNG để thêm, ĐEN để xoá",
-                        height=400,
-                        brush=gr.Brush(colors=["#FFFFFF"], color_mode="fixed"),
-                    )
-            
-            btn_apply = gr.Button("5. Áp dụng chỉnh sửa & Tạo file", variant="primary")
+            info = gr.Markdown("...")
+            cut_out = gr.Image(label="4. Vật thể đã tách (RGBA)", height=320, interactive=False)
+            edited_out = gr.Image(label="7. Output sau chỉnh sửa (Preview)", height=280, interactive=False)
             files_out = gr.Files(label="Tệp đã xuất: [object_rgba.png, mask.png]")
 
     # ==== Wiring ====
-    def set_draw_mode():
-        return (
-            gr.update(variant="primary"),
-            gr.update(variant="secondary"),
-            gr.update(brush=gr.Brush(colors=["#FFFFFF"], color_mode="fixed")),
-        )
+    # Đổi màu cọ theo Radio (Draw=trắng, Erase=đen)
+    def change_mode(m):
+        color = "#FFFFFF" if "Draw" in m else "#000000"
+        return gr.update(brush=gr.Brush(colors=[color], color_mode="fixed"))
 
-    def set_erase_mode():
-        return (
-            gr.update(variant="secondary"),
-            gr.update(variant="primary"),
-            gr.update(brush=gr.Brush(colors=["#000000"], color_mode="fixed")),
-        )
-
-    btn_draw.click(fn=set_draw_mode, inputs=None, outputs=[btn_draw, btn_erase, mask_canvas])
-    btn_erase.click(fn=set_erase_mode, inputs=None, outputs=[btn_draw, btn_erase, mask_canvas])
+    mode.change(fn=change_mode, inputs=[mode], outputs=[mask_canvas])
 
     """ Khi bấm chạy Segmentation:
     Gọi run_segmentation(image_pil)
@@ -280,12 +270,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation")
     )
 
     """
-    Khi thay đổi opacity hoặc class hiển thị. -> Cập nhật lại overlay màu hiển thị (render_overlay) mà không cần chạy lại model.
-    """
-    opacity.change(fn=render_overlay, inputs=[state_img, state_seg, visible, opacity], outputs=[seg_vis])
-    visible.change(fn=render_overlay, inputs=[state_img, state_seg, visible, opacity], outputs=[seg_vis])
-
-    """
     Khi click vào ảnh segmentation → gọi click_extract:
         Tách object tại vị trí click
         Hiển thị ảnh RGBA đã tách (cut_out)
@@ -294,7 +278,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation")
     """
     seg_vis.select(
         fn=click_extract,
-        inputs=[img_in, state_seg, min_area, feather],
+        inputs=[img_in, state_seg, min_area_state, feather_state],
         outputs=[cut_out, mask_canvas, info, state_rgba_obj]
     )
 
@@ -302,12 +286,12 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation")
     Khi nhấn “Áp dụng chỉnh sửa & Tạo file”:
         Lấy dữ liệu vẽ từ mask_canvas
         Cập nhật alpha mask object bằng apply_sketch
-        Cập nhật preview (cut_out) và hiển thị 2 file tải xuống (files_out)
+        Cập nhật preview OUTPUT sau chỉnh sửa (edited_out) và hiển thị 2 file tải xuống (files_out)
     """
     btn_apply.click(
         fn=apply_sketch,
         inputs=[state_rgba_obj, mask_canvas],
-        outputs=[cut_out, files_out]
+        outputs=[edited_out, files_out]
     )
 
 # Run gradio

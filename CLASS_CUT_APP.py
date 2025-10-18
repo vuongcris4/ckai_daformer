@@ -12,7 +12,7 @@ from mmseg.core.evaluation import get_classes, get_palette
 DEVICE = "cuda:0"  # hoặc "cpu"
 
 CONFIG = "work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/211108_1622_gta2cs_daformer_s0_7f24c.json"
-CKPT   = "work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/latest.pth"
+CKPT   = "work_dirs/gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0/latest.pth"
 
 PALETTE_NAME = 'cityscapes'
 CLASSES = get_classes(PALETTE_NAME)
@@ -219,11 +219,30 @@ def apply_sketch(stashed_rgba_obj, sketch_data, crop_info, canvas_bg_pil):
     return to_pil(new_rgba), [path_rgba, path_mask]
 
 # ====== UI ======
-with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation", css="""
+# CẬP NHẬT: Thêm CSS để tùy chỉnh tiêu đề và màu nút
+with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation - Huỳnh Xuân Vỹ - Trần Duy Vương", css="""
+/* Định dạng cho các tiêu đề phụ (chữ nhỏ hơn, màu xám) */
+.subtitle { 
+    margin-top: -15px !important; 
+    margin-bottom: 10px !important; 
+    color: #a0a0a0; 
+    font-size: 0.9em; 
+}
+/* Căn giữa ảnh preview trong Sketchpad */
 #mask_canvas > div {
-    background-size: contain !important;  
+    background-size: contain !important;
     background-repeat: no-repeat !important;
-    background-position: center !important;
+    background-position: center center !important;
+}
+/* Đổi màu các nút bấm từ tím sang xám đậm */
+.gradio-container .gr-button {
+    background: #374151 !important;
+    color: white !important;
+    border: none !important;
+}
+/* Hiệu ứng khi di chuột qua nút */
+.gradio-container .gr-button:hover {
+    background: #4b5563 !important;
 }
 """) as demo:
     gr.Markdown("## ClassCut - Semantic Segmentation ")
@@ -231,8 +250,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation",
     state_seg = gr.State()
     state_img = gr.State()
     state_rgba_obj = gr.State()
-    state_crop_info = gr.State() # State mới để lưu thông tin crop
-    state_canvas_bg = gr.State() # CẬP NHẬT: State mới để lưu ảnh nền của canvas
+    state_crop_info = gr.State()
+    state_canvas_bg = gr.State()
 
     MIN_AREA_DEFAULT = 500
     FEATHER_DEFAULT = 1.0
@@ -242,33 +261,53 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation",
     with gr.Row(equal_height=False):
         # --- CỘT 1: INPUT & KẾT QUẢ SEGMENTATION ---
         with gr.Column(scale=3, min_width=360):
-            img_in = gr.Image(type="pil", label="1. Tải ảnh gốc lên")
-            btn_run = gr.Button("2. Chạy Segmentation", variant="primary")
-            seg_vis = gr.Image(label="3. Kết quả Segmentation (Click vào ảnh để tách vật thể)", height=420)
+            # CẬP NHẬT: Dùng Markdown làm tiêu đề riêng
+            gr.Markdown("### 1. Tải ảnh gốc lên")
+            img_in = gr.Image(type="pil", show_label=False) # Ẩn tiêu đề cũ
+
+            # CẬP NHẬT: Nút bấm sẽ được đổi màu bằng CSS ở trên
+            btn_run = gr.Button("2. Chạy Segmentation")
+
+            gr.Markdown("### 3. Kết quả Segmentation")
+            gr.Markdown("<p class='subtitle'>Click vào ảnh để tách vật thể</p>")
+            seg_vis = gr.Image(show_label=False, height=420)
 
         # --- CỘT 2: CHỈNH SỬA MASK & OUTPUT ---
         with gr.Column(scale=3):
+            gr.Markdown("### 5. Chỉnh sửa mask")
+            gr.Markdown("<p class='subtitle'>Dùng cọ TRẮNG để thêm, ĐEN để xoá</p>")
             mask_canvas = gr.Sketchpad(
-                label="5. Chỉnh sửa mask: Dùng cọ TRẮNG để thêm, ĐEN để xoá",
+                show_label=False, # Ẩn tiêu đề cũ
                 height=360,
-                width=540, # Thêm width để canvas có tỉ lệ cố định
+                width=540,
                 brush=gr.Brush(colors=["#FFFFFF"], color_mode="fixed"),
                 elem_id="mask_canvas"
             )
+            # CẬP NHẬT: Đã xóa 'vertical_align="center"' để tương thích
             with gr.Row():
+                 # CẬP NHẬT: Tách tiêu đề cho Radio button
+                gr.Markdown("#### Chế độ vẽ")
                 mode = gr.Radio(
                     choices=["Draw (Thêm)", "Erase (Xoá)"],
                     value="Draw (Thêm)",
-                    label="Chế độ vẽ"
+                    show_label=False # Ẩn tiêu đề cũ
                 )
-            btn_apply = gr.Button("6. Áp dụng chỉnh sửa & Tạo file", variant="primary")
+            
+            btn_apply = gr.Button("6. Áp dụng chỉnh sửa & Tạo file")
 
         # --- CỘT 3: OUTPUT & FILES ---
         with gr.Column(scale=3):
-            info = gr.Markdown("...")
-            cut_out = gr.Image(label="4. Vật thể đã tách (RGBA)", height=320, interactive=False)
-            edited_out = gr.Image(label="7. Output sau chỉnh sửa (Preview)", height=280, interactive=False)
-            files_out = gr.Files(label="Tệp đã xuất: [object_rgba.png, mask.png]")
+            info = gr.Markdown("...") # Giữ nguyên
+
+            gr.Markdown("### 4. Vật thể đã tách (RGBA)")
+            cut_out = gr.Image(show_label=False, height=320, interactive=False)
+
+            gr.Markdown("### 7. Output sau chỉnh sửa (Preview)")
+            edited_out = gr.Image(show_label=False, height=280, interactive=False)
+            
+            gr.Markdown("### Tệp đã xuất")
+            gr.Markdown("<p class='subtitle'>[object_rgba.png, mask.png]</p>")
+            files_out = gr.Files(show_label=False)
 
     # ==== Wiring ====
     def change_mode(m):
@@ -286,13 +325,11 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation",
     seg_vis.select(
         fn=click_extract,
         inputs=[img_in, state_seg, min_area_state, feather_state],
-        # CẬP NHẬT: Thêm state_canvas_bg vào outputs
         outputs=[cut_out, mask_canvas, info, state_rgba_obj, state_crop_info, state_canvas_bg]
     )
 
     btn_apply.click(
         fn=apply_sketch,
-        # CẬP NHẬT: Thêm state_canvas_bg vào inputs
         inputs=[state_rgba_obj, mask_canvas, state_crop_info, state_canvas_bg],
         outputs=[edited_out, files_out]
     )

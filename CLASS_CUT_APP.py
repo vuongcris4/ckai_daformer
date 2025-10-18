@@ -61,7 +61,7 @@ Nhận ảnh đầu vào (PIL Image), Chạy model segmentation
 """
 def run_segmentation(image_pil):
     img = np.array(image_pil.convert("RGB")) # PIL Image -> (R, G, B) -> Chuyển qua NumPy (HxW×3)
-    result = inference_segmentor(MODEL, img)    # API MMSeg reisze ảnh đúng kích thước model, đưa qua model, nhận đầu ra là mask phân lớp cho từng pixel
+    result = inference_segmentor(MODEL, img)   # API MMSeg reisze ảnh đúng kích thước model, đưa qua model, nhận đầu ra là mask phân lớp cho từng pixel
     seg = result[0] if isinstance(result, (list,tuple)) else result
     overlay = (0.5*img + 0.5*COLOR_MAP[seg]).astype(np.uint8)    # HxW seg là mảng index, thay các color (3 channels) vào mảng seg
     return to_pil(overlay), seg, img
@@ -99,12 +99,12 @@ def render_overlay(img_np, seg, visible_classes, opacity):
 # ====== 3) CLICK → TÁCH COMPONENT THEO ĐIỂM ======
 def click_extract(evt: gr.SelectData, image_pil, seg, min_area, feather):
     if image_pil is None or seg is None or evt is None:
-        return None, None, "Hãy chạy segmentation rồi click lên ảnh.", None, None
+        return None, None, "Hãy chạy segmentation rồi click lên ảnh.", None, None, None
     x, y = evt.index
     img = np.array(image_pil.convert("RGB"))
     h, w = seg.shape[:2]
     if not (0 <= x < w and 0 <= y < h):
-        return None, None, "Điểm click ngoài ảnh.", None, None
+        return None, None, "Điểm click ngoài ảnh.", None, None, None
 
     cid = int(seg[y, x])
     cname = CLASSES[cid] if 0 <= cid < len(CLASSES) else f"class_{cid}"
@@ -114,7 +114,7 @@ def click_extract(evt: gr.SelectData, image_pil, seg, min_area, feather):
     lab_id = labels[y, x]
     area = int(stats[lab_id, cv2.CC_STAT_AREA])
     if area < min_area:
-        return None, None, f"Vùng quá nhỏ (<{min_area}). Class: {cname}", None, None
+        return None, None, f"Vùng quá nhỏ (<{min_area}). Class: {cname}", None, None, None
 
     comp = (labels == lab_id).astype(np.uint8)
     if feather > 0:
@@ -146,15 +146,17 @@ def click_extract(evt: gr.SelectData, image_pil, seg, min_area, feather):
         "original_w": original_w, "original_h": original_h
     }
 
-    return output_pil, output_pil_canvas, info, rgba_crop, crop_info
+    # CẬP NHẬT: Trả về thêm output_pil_canvas để lưu vào state
+    return output_pil, output_pil_canvas, info, rgba_crop, crop_info, output_pil_canvas
 
 
 # ====== 4) ÁP DỤNG SỬA MASK (SKETCH) LÊN OBJECT ======
-def apply_sketch(stashed_rgba_obj, sketch_data, crop_info):
+# CẬP NHẬT: Toàn bộ hàm này đã được thay thế bằng thuật toán mới
+def apply_sketch(stashed_rgba_obj, sketch_data, crop_info, canvas_bg_pil):
     """
     Áp dụng nét vẽ từ Sketchpad (Trắng=Thêm, Đen=Xóa) vào alpha channel của object.
     """
-    if stashed_rgba_obj is None or crop_info is None:
+    if stashed_rgba_obj is None or crop_info is None or canvas_bg_pil is None:
         return None, None
 
     rgba = stashed_rgba_obj.copy()
@@ -163,21 +165,34 @@ def apply_sketch(stashed_rgba_obj, sketch_data, crop_info):
     if sketch_data is not None:
         try:
             composite_np = sketch_data['composite']
-            sketch_rgb = composite_np[..., :3]
+            # Chuyển canvas background từ PIL sang NumPy array, đảm bảo có RGBA
+            canvas_bg_np = np.array(canvas_bg_pil.convert("RGBA"))
 
+            # --- THUẬT TOÁN MỚI: SO SÁNH TRỰC TIẾP TRẠNG THÁI TRƯỚC VÀ SAU KHI VẼ ---
+            comp_rgb = composite_np[..., :3]
+            bg_rgb = canvas_bg_np[..., :3]
+
+            # Vùng "thêm" là những pixel TRỞ THÀNH màu trắng (>250)
+            is_white = np.all(comp_rgb > 250, axis=-1)
+            was_white = np.all(bg_rgb > 250, axis=-1)
+            add_mask_canvas = is_white & ~was_white
+
+            # Vùng "xóa" là những pixel TRỞ THÀNH màu đen (<5)
+            is_black = np.all(comp_rgb < 5, axis=-1)
+            was_black = np.all(bg_rgb < 5, axis=-1)
+            erase_mask_canvas = is_black & ~was_black
+            # --- KẾT THÚC THUẬT TOÁN MỚI ---
+            
             # Lấy thông tin đã lưu
             px, py = crop_info["paste_x"], crop_info["paste_y"]
             nw, nh = crop_info["new_w"], crop_info["new_h"]
             ow, oh = crop_info["original_w"], crop_info["original_h"]
 
-            # 1. Cắt vùng vẽ từ canvas lớn
-            sketch_crop = sketch_rgb[py:py+nh, px:px+nw]
+            # 1. Cắt vùng mask từ canvas lớn
+            add_mask_cropped = add_mask_canvas[py:py+nh, px:px+nw]
+            erase_mask_cropped = erase_mask_canvas[py:py+nh, px:px+nw]
 
-            # 2. Tạo mask từ vùng đã cắt
-            add_mask_cropped = np.all(sketch_crop > 200, axis=-1)
-            erase_mask_cropped = np.all(sketch_crop < 50, axis=-1)
-
-            # 3. Resize các mask này về kích thước gốc của vật thể
+            # 2. & 3. Resize các mask này về kích thước gốc của vật thể
             add_pil = Image.fromarray(add_mask_cropped.astype(np.uint8) * 255)
             erase_pil = Image.fromarray(erase_mask_cropped.astype(np.uint8) * 255)
 
@@ -217,6 +232,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation",
     state_img = gr.State()
     state_rgba_obj = gr.State()
     state_crop_info = gr.State() # State mới để lưu thông tin crop
+    state_canvas_bg = gr.State() # CẬP NHẬT: State mới để lưu ảnh nền của canvas
 
     MIN_AREA_DEFAULT = 500
     FEATHER_DEFAULT = 1.0
@@ -270,12 +286,14 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation",
     seg_vis.select(
         fn=click_extract,
         inputs=[img_in, state_seg, min_area_state, feather_state],
-        outputs=[cut_out, mask_canvas, info, state_rgba_obj, state_crop_info]
+        # CẬP NHẬT: Thêm state_canvas_bg vào outputs
+        outputs=[cut_out, mask_canvas, info, state_rgba_obj, state_crop_info, state_canvas_bg]
     )
 
     btn_apply.click(
         fn=apply_sketch,
-        inputs=[state_rgba_obj, mask_canvas, state_crop_info],
+        # CẬP NHẬT: Thêm state_canvas_bg vào inputs
+        inputs=[state_rgba_obj, mask_canvas, state_crop_info, state_canvas_bg],
         outputs=[edited_out, files_out]
     )
 

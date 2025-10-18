@@ -23,6 +23,56 @@ from mmseg.models.builder import build_train_model
 from mmseg.utils import collect_env, get_root_logger
 from mmseg.utils.collect_env import gen_code_archive
 
+"""
+Dưới đây là **luồng chạy ngắn gọn** của file:
+
+1. Parse CLI
+* `parse_args(args)`: đọc `config`, `--work-dir`, `--options`, `--gpus/--gpu-ids`, `--seed`, `--launcher`,…
+* Bổ sung `os.environ['LOCAL_RANK']` nếu thiếu.
+
+2. Nạp & ghi đè cấu hình
+* `cfg = Config.fromfile(args.config)`
+* `cfg.merge_from_dict(args.options)` nếu có `--options`
+* Bật `torch.backends.cudnn.benchmark` nếu `cfg.cudnn_benchmark=True`
+
+3. Xác định `work_dir`
+* Ưu tiên: `--work-dir` > `cfg.work_dir` > `./work_dirs/<tên_config>`
+* Gán `cfg.model.train_cfg.work_dir = cfg.work_dir`
+* Ánh xạ `load_from`, `resume_from`, `gpu_ids`/`gpus` vào `cfg`
+
+4. Khởi tạo phân tán (nếu có)
+* Nếu `launcher != 'none'` → `init_dist(args.launcher, **cfg.dist_params)`
+* `distributed = True/False`
+
+5. Chuẩn bị logging & snapshot
+* Tạo thư mục `work_dir`
+* `cfg.dump()` lưu bản config đã merge
+* `gen_code_archive(work_dir)` snapshot mã nguồn
+* Tạo logger, ghi **env info** + toàn bộ `cfg.pretty_text`
+
+6. Seed & deterministic
+* Lấy `seed` từ CLI hoặc `cfg`, rồi `set_random_seed`
+* Ghi `seed` và `exp_name` vào `cfg`/`meta`
+
+7. Build model
+* `model = build_train_model(cfg, …)`
+* Nếu `cfg` có `uda` → build **UDA wrapper** (DAFormer/HRDA…)
+* Ngược lại → build **segmentor thường** (EncoderDecoder,…)
+* `model.init_weights()`
+
+8. Build datasets & workflow
+* `datasets = [build_dataset(cfg.data.train)]`
+* Nếu `cfg.workflow` có train+val → clone `cfg.data.val` (pipeline theo train) và append
+
+9. Gắn metadata cho checkpoint
+* Thêm `mmseg_version`, `config`, `CLASSES`, `PALETTE` vào `cfg.checkpoint_config.meta`
+* `model.CLASSES = datasets[0].CLASSES`
+* `meta.update(...)`
+
+10. Chạy train
+* `train_segmentor(model, datasets, cfg, distributed, validate=not args.no_validate, timestamp, meta)`
+  → Dựng runner/optimizer/scheduler, đăng ký hooks (log, ckpt, eval), chạy train/val theo `workflow`, lưu **log + checkpoint** vào `work_dir`.
+"""
 
 def parse_args(args):
     parser = argparse.ArgumentParser(description='Train a segmentor')
@@ -140,7 +190,7 @@ def main(args):
     meta['seed'] = args.seed
     meta['exp_name'] = osp.splitext(osp.basename(args.config))[0]
 
-    model = build_train_model(
+    model = build_train_model(  # dựng mô hình từ cfg.model (backbone, decode head, DAFormer head, …).
         cfg, train_cfg=cfg.get('train_cfg'), test_cfg=cfg.get('test_cfg'))
     model.init_weights()
 
@@ -154,15 +204,21 @@ def main(args):
     if cfg.checkpoint_config is not None:
         # save mmseg version, config file content and class names in
         # checkpoints as meta data
-        cfg.checkpoint_config.meta = dict(
+        cfg.checkpoint_config.meta = dict(  # Chèn meta vào checkpoint_config
             mmseg_version=f'{__version__}+{get_git_hash()[:7]}',
             config=cfg.pretty_text,
             CLASSES=datasets[0].CLASSES,
             PALETTE=datasets[0].PALETTE)
     # add an attribute for visualization convenience
-    model.CLASSES = datasets[0].CLASSES
+    model.CLASSES = datasets[0].CLASSES # Set model.CLASSES để các hook/visualizer dễ truy cập.
     # passing checkpoint meta for saving best checkpoint
     meta.update(cfg.checkpoint_config.meta)
+    """
+    Hàm “orchestrator” sẽ:
+    dựng runner/optimizer/scheduler theo cfg,
+    đăng ký hooks (log, ckpt, eval),
+    nếu validate=True thì chạy validation theo workflow,
+    lưu checkpoint + log + meta vào work_dir."""
     train_segmentor(
         model,
         datasets,

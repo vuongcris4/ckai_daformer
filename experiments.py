@@ -136,6 +136,7 @@ def generate_experiment_cfgs(id):
             'pretrained': get_pretraining_file(backbone),
             'backbone': get_backbone_cfg(backbone),
         }
+        cfg['model']['backbone']['with_cp'] = True
         if 'sfa_' in architecture_mod:
             cfg['model']['neck'] = dict(type='SegFormerAdapter')
         if '_nodbn' in architecture_mod:
@@ -208,6 +209,9 @@ def generate_experiment_cfgs(id):
             .replace('False', 'F').replace('cityscapes', 'cs') \
             .replace('synthia', 'syn') \
             .replace('darkzurich', 'dzur')
+        # ✅ Bật huấn luyện FP16 để giảm 30–40% VRAM
+        cfg['fp16'] = dict(loss_scale='dynamic')
+        cfg['optimizer_config'] = dict(type='Fp16OptimizerHook', loss_scale='dynamic')
         return cfg
 
     # -------------------------------------------------------------------------
@@ -215,7 +219,7 @@ def generate_experiment_cfgs(id):
     # -------------------------------------------------------------------------
     cfgs = []
     n_gpus = 1
-    batch_size = 2
+    batch_size = 1
     iters = 40000
     opt, lr, schedule, pmult = 'adamw', 0.00006, 'poly10warm', True
     crop = '512x512'

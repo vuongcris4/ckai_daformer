@@ -25,13 +25,15 @@ def get_module(module):
 
     return module
 
-
+# Decorator Pattern
 class UDADecorator(BaseSegmentor):
+    # DACS Has-A self.model
 
     def __init__(self, **cfg):
         super(BaseSegmentor, self).__init__()
 
-        self.model = build_segmentor(deepcopy(cfg['model']))
+        # EncoderDecoder với backbone là MiT-B5 và head là DAFormer
+        self.model = build_segmentor(deepcopy(cfg['model']))    # Đây là mối quan hệ "has-a" (có một), hay còn gọi là Composition.
         self.train_cfg = cfg['model']['train_cfg']
         self.test_cfg = cfg['model']['test_cfg']
         self.num_classes = cfg['model']['decode_head']['num_classes']
@@ -39,6 +41,11 @@ class UDADecorator(BaseSegmentor):
     def get_model(self):
         return get_module(self.model)
 
+    # Các function bên dưới đều gọi lại hàm tương ứng trong model gốc
+    """Tách biệt logic: Tách logic của thuật toán Thích nghi Miền không Giám sát (UDA) khỏi kiến trúc mô hình segmentation cụ thể.
+    Linh hoạt: UDADecorator tạo ra một "khung sườn" chung cho các thuật toán UDA. 
+    Bạn có thể dễ dàng thay đổi mô hình bên trong (self.model) mà không cần sửa đổi lớp này.
+    """
     def extract_feat(self, img):
         """Extract features from images."""
         return self.get_model().extract_feat(img)

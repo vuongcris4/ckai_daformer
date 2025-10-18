@@ -3,6 +3,12 @@
 # - Config and checkpoint update
 # - Saving instead of showing prediction
 
+#mit-b5
+# python -m demo.image_demo demo/demo.png work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/211108_1622_gta2cs_daformer_s0_7f24c.json work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/latest.pth
+
+#mit-b3
+# python -m demo.image_demo demo/demo.png work_dirs/local-basic/251017_1018_gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0_330ad/251017_1018_gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0_330ad.json work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/latest.pth
+
 import os
 from argparse import ArgumentParser
 

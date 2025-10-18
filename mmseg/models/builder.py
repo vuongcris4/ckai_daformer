@@ -60,6 +60,10 @@ def build_train_model(cfg, train_cfg=None, test_cfg=None):
 
 
 def build_segmentor(cfg, train_cfg=None, test_cfg=None):
+    """
+    Hàm này đọc cfg (đối tượng cấu hình MMCV Config) 
+    rồi trả về một instance của model đã được build hoàn chỉnh, 
+    sẵn sàng để huấn luyện (train_segmentor sẽ gọi nó)."""
     """Build segmentor."""
     if train_cfg is not None or test_cfg is not None:
         warnings.warn(

@@ -7,6 +7,107 @@
 # https://github.com/vikolss/DACS
 # Copyright (c) 2020 vikolss. Licensed under the MIT License.
 # A copy of the license is available at resources/license_dacs
+"""
+DACS: Domain Adaptive Semantic Segmentation via Cross-Domain Mixing and
+Self-Training
+Mở rộng cơ chế train của MMSegmentation để:
+1. Kết hợp domain source (label) và target (no label) trong cùng một bước huận luyện
+2. Sử dụng mô hình (teacher) để tạo nhãn giả cho domain target
+3. Trộn ảnh source và target (class-mix) -> giúp giảm domain gap;
+4. Thêm regularization bằng feature distance loss (FDist) để mô hình không quên đặc trưng ImageNet.
+
+ClassMix:
+Giả sử bạn có:
+
+Ảnh source có nhãn thật ys
+Ảnh target có pseudo label y^t
+Ta tạo Mask M cho từng ảnh:
+Mc = 1 nếu pixel đó thuộc class có trong ảnh source
+Mc = 0 nếu pixel đó lấy từ target
+Sau đó trộn ảnh và nhãn:
+xmix = M * xs + (1 - M) * xt
+ymix = M * ys + (1 - M) * y^t
+"""
+
+"""
+1. UDA - Unsupervised Domain Adaptation
+Đây là bài toán học thích nghi miền không giám sát, mục tiêu là:
+Huấn luyện một mô hình phân đoạn ảnh có nhãn trong source domain (ví dụ GTA5 - ảnh mô phỏng),
+nhưng áp dụng tốt cho target domain (ví dụ Cityscapes - ảnh thật), mà target không có nhãn.
+→ UDA giúp mô hình giảm domain gap giữa hai miền dữ liệu.
+2. Self-training
+Là chiến lược tự huấn luyện (self-training) dựa trên pseudo label.
+Cụ thể:
+Dùng mô hình (hoặc bản EMA - Exponential Moving Average) để dự đoán nhãn cho ảnh target → gọi là pseudo label.
+Chọn những pixel có độ tin cậy cao (probability > threshold).
+Huấn luyện lại mô hình (student) bằng các pseudo label đó, cùng với dữ liệu thật (source).
+→ Vòng lặp này gọi là self-training loop, và là nền tảng của DACS / DAFormer.
+3. ImageNet Feature Distance (FD)
+Đây là thành phần bổ sung quan trọng trong mô hình DAFormer / DACS.
+Khi mô hình được huấn luyện chỉ bằng dữ liệu source + pseudo target, nó dễ bị “catastrophic forgetting” — quên mất những đặc trưng phổ quát đã học từ pretraining ImageNet.
+Vì vậy, họ thêm một Loss gọi là Feature Distance Loss (FD) để giữ ổn định đặc trưng ImageNet trong backbone.
+
+dacs.py
+👉 Một thuật toán huấn luyện domain adaptation (UDA)
+👉 Sử dụng self-training bằng pseudo label
+👉 Và bổ sung ImageNet Feature Distance loss để tránh quên đặc trưng pretrain.
+"""
+
+
+"""
+                  ┌───────────────────────────────────────────┐
+                  │         UDA Self-Training Framework        │
+                  └───────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌────────────────────────────────────────────────────────────────────┐
+│                         Các thành phần chính                       │
+├────────────────────────────────────────────────────────────────────┤
+│ 1️⃣ Source Supervised Branch                                        │
+│   - Input: Ảnh nguồn (x_s), nhãn thật (y_s)                        │
+│   - Loss: Cross Entropy Loss                                        │
+│                                                                    │
+│ 2️⃣ Target Pseudo-Label Branch                                     │
+│   - Input: Ảnh đích (x_t)                                          │
+│   - Mô hình EMA Teacher sinh pseudo-label                          │
+│   - Chỉ lấy pixel có độ tin cậy cao (p_max > threshold)            │
+│   - Loss: Cross Entropy (trọng số theo confidence)                 │
+│                                                                    │
+│ 3️⃣ ClassMix                                                      │
+│   - Trộn ảnh source và target theo mask từng class                 │
+│   - Mixed Image = M⊙x_s + (1−M)⊙x_t                               │
+│   - Mixed Label = M⊙y_s + (1−M)⊙ŷ_t                                │
+│   - Loss: Cross Entropy (supervised + pseudo)                      │
+│                                                                    │
+│ 4️⃣ ImageNet Feature Distance (FD)                                │
+│   - So sánh feature backbone của student và backbone pretrained    │
+│     từ ImageNet:                                                   │
+│       L_FD = λ·‖F_student − F_ImageNet‖₂                           │
+│   - Vai trò: Giữ ổn định đặc trưng pretrained                     │
+│                                                                    │
+│ 5️⃣ EMA Teacher Update                                            │
+│   - θ_ema ← αθ_ema + (1−α)θ_student                               │
+│   - Teacher sinh pseudo label ổn định hơn                         │
+└────────────────────────────────────────────────────────────────────┘
+
+Tổng loss toàn bộ hệ thống:
+   L_total = L_source + L_mix + λ_FD·L_FD
+
+"""
+"""
+Class-Mix: class nào ưu tiên thấp hơn thì bỏ qua, ghép cùng kích thước theo config.
+Họ tạo 1 mask duy nhất cho mỗi ảnh (get_class_masks()),
+Mask đó là hợp (union) của tất cả class được chọn từ source,
+Pixel nào không nằm trong mask → lấy từ target.
+
+Nếu thuộc class được chọn → dùng pixel source
+Nếu không → dùng pixel target
+
+class mask -> Lấy từ source. Còn lại lấy từ target.
+"""
+
+# https://www.notion.so/vuongcris4/DACS-DAformer-28f16baeeae98002979cfff32ad12e33
+
 
 import math
 import os
@@ -48,24 +149,34 @@ def calc_grad_magnitude(grads, norm_type=2.0):
 
     return norm
 
-
+# Registry modue để config gọi tới class mà k cần import trực tiếp.
+# LUỒNG UDADecorator
+# https://www.notion.so/vuongcris4/Lu-ng-UDADecorator-28f16baeeae98089ad63d4017100e12c
+"""
+- **`self.model` (Student):** Là một object `EncoderDecoder`. Nó được tạo bởi lớp cha `UDADecorator`.
+- **`self.ema_model` (Teacher):** Là một object `EncoderDecoder` khác. Nó được tạo bởi chính `DACS`.
+- **`self.imnet_model` (Reference):** Là một object `EncoderDecoder` thứ ba. Nó cũng được tạo bởi `DACS`.
+"""
 @UDA.register_module()
 class DACS(UDADecorator):
+    """
+    DACS Is-A UDADecorator
+    """
 
     def __init__(self, **cfg):
         super(DACS, self).__init__(**cfg)
         self.local_iter = 0
-        self.max_iters = cfg['max_iters']
-        self.alpha = cfg['alpha']
-        self.pseudo_threshold = cfg['pseudo_threshold']
+        self.max_iters = cfg['max_iters']   # từ config daformer đưa xuống.
+        self.alpha = cfg['alpha']       # EMA, teacher update
+        self.pseudo_threshold = cfg['pseudo_threshold'] # ngưỡng tin cậy cho pseudo-label
         self.psweight_ignore_top = cfg['pseudo_weight_ignore_top']
         self.psweight_ignore_bottom = cfg['pseudo_weight_ignore_bottom']
-        self.fdist_lambda = cfg['imnet_feature_dist_lambda']
-        self.fdist_classes = cfg['imnet_feature_dist_classes']
-        self.fdist_scale_min_ratio = cfg['imnet_feature_dist_scale_min_ratio']
-        self.enable_fdist = self.fdist_lambda > 0
-        self.mix = cfg['mix']
-        self.blur = cfg['blur']
+        self.fdist_lambda = cfg['imnet_feature_dist_lambda'] # Trọng số FD
+        self.fdist_classes = cfg['imnet_feature_dist_classes']  # list thing classes
+        self.fdist_scale_min_ratio = cfg['imnet_feature_dist_scale_min_ratio'] # > r, trung bình onehot labels phải > r
+        self.enable_fdist = self.fdist_lambda > 0   # trọng số FD > 0 thì bật FD
+        self.mix = cfg['mix']   # class-mix
+        self.blur = cfg['blur'] # augmentation blur trong strong_transform
         self.color_jitter_s = cfg['color_jitter_strength']
         self.color_jitter_p = cfg['color_jitter_probability']
         self.debug_img_interval = cfg['debug_img_interval']
@@ -76,25 +187,34 @@ class DACS(UDADecorator):
         self.debug_gt_rescale = None
 
         self.class_probs = {}
-        ema_cfg = deepcopy(cfg['model'])
-        self.ema_model = build_segmentor(ema_cfg)
+
+        # Build teacher (EMA) + (tuỳ chọn) ImageNet model cho FD
+        ema_cfg = deepcopy(cfg['model'])    # ← chính là model từ _base_/models/...
+        self.ema_model = build_segmentor(ema_cfg)   # toàn bộ cấu hình segmentor (MiT-B3 + DAFormer head) lấy từ
 
         if self.enable_fdist:
-            self.imnet_model = build_segmentor(deepcopy(cfg['model']))
+            self.imnet_model = build_segmentor(deepcopy(cfg['model']))  # MiT-B3, ImageNet pretrained
         else:
             self.imnet_model = None
 
+    # teacher
     def get_ema_model(self):
         return get_module(self.ema_model)
 
+    # backbone encoder
     def get_imnet_model(self):
         return get_module(self.imnet_model)
 
+    # load pretrained
     def _init_ema_weights(self):
+        # teacher model không bao giờ được huấn luyện bằng backpropagation.
         for param in self.get_ema_model().parameters():
             param.detach_()
-        mp = list(self.get_model().parameters())
-        mcp = list(self.get_ema_model().parameters())
+        # Lấy ra danh sách tất cả các tham số (trọng số, bias...) của student model (mp) và teacher model (mcp). 
+        # Cả hai model có cùng kiến trúc nên hai danh sách này sẽ có cùng độ dài và thứ tự tương ứng.
+        mp = list(self.get_model().parameters())    # student
+        mcp = list(self.get_ema_model().parameters())   # teacher
+        # sao chép trọng số từ student sang teacher
         for i in range(0, len(mp)):
             if not mcp[i].data.shape:  # scalar tensor
                 mcp[i].data = mp[i].data.clone()
@@ -102,7 +222,7 @@ class DACS(UDADecorator):
                 mcp[i].data[:] = mp[i].data[:].clone()
 
     def _update_ema(self, iter):
-        alpha_teacher = min(1 - 1 / (iter + 1), self.alpha)
+        alpha_teacher = min(1 - 1 / (iter + 1), self.alpha) # iter = 0 -> alpha_teacher = 0, iter = lớn -> alpha_teacher = 1
         for ema_param, param in zip(self.get_ema_model().parameters(),
                                     self.get_model().parameters()):
             if not param.data.shape:  # scalar tensor
@@ -142,24 +262,34 @@ class DACS(UDADecorator):
         """
 
         optimizer.zero_grad()
-        log_vars = self(**data_batch)
-        optimizer.step()
+        log_vars = self(**data_batch)   # viết tắt để gọi phương thức forward() của class DACS. (gọi forward_train().)
+        optimizer.step()    # cập nhật trọng số của self.model
 
         log_vars.pop('loss', None)  # remove the unnecessary 'loss'
+        "Dòng cuối cùng chỉ đơn giản là định dạng lại đầu ra theo đúng chuẩn mà engine huấn luyện mong đợi, bao gồm log_vars để hiển thị và num_samples để tính trung bình các chỉ số."
         outputs = dict(
             log_vars=log_vars, num_samples=len(data_batch['img_metas']))
         return outputs
 
+    # TÍNH FD
     def masked_feat_dist(self, f1, f2, mask=None):
-        feat_diff = f1 - f2
+        feat_diff = f1 - f2 # feature map của student model trừ đi feature map của ImageNet model.
         # mmcv.print_log(f'fdiff: {feat_diff.shape}', 'mmseg')
-        pw_feat_dist = torch.norm(feat_diff, dim=1, p=2)
+
+        # (Batch, Channels, Height, Width). Tại mỗi pixel (h, w), ta có một vector đặc trưng (feature vector) với độ dài là Channels.
+        pw_feat_dist = torch.norm(feat_diff, dim=1, p=2)    # Tính toán chuẩn L2 (L2-norm), hay còn gọi là khoảng cách Euclid.
+        # pw_feat_dist là một tensor mới có kích thước (Batch, Height, Width). Mỗi giá trị trong tensor này là một con số, 
+        # đại diện cho "mức độ khác biệt" của feature tại pixel tương ứng. "pw" ở đây có thể hiểu là "pixel-wise" (từng pixel).
+
         # mmcv.print_log(f'pw_fdist: {pw_feat_dist.shape}', 'mmseg')
         if mask is not None:
             # mmcv.print_log(f'fd mask: {mask.shape}', 'mmseg')
-            pw_feat_dist = pw_feat_dist[mask.squeeze(1)]
+
+            # loại bỏ chiều 1
+            pw_feat_dist = pw_feat_dist[mask.squeeze(1)]    # mask là một tensor boolean (True/False) có kích thước (Batch, Height, Width), nó đánh dấu True ở những pixel thuộc các lớp chúng ta quan tâm.
             # mmcv.print_log(f'fd masked: {pw_feat_dist.shape}', 'mmseg')
         return torch.mean(pw_feat_dist)
+
 
     def calc_feat_dist(self, img, gt, feat=None):
         assert self.enable_fdist
@@ -187,6 +317,7 @@ class DACS(UDADecorator):
             {'loss_imnet_feat_dist': feat_dist})
         feat_log.pop('loss', None)
         return feat_loss, feat_log
+
 
     def forward_train(self, img, img_metas, gt_semantic_seg, target_img,
                       target_img_metas):

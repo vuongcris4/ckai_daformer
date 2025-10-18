@@ -5,7 +5,7 @@
 
 # DAFormer (with context-aware feature fusion) in Tab. 7
 
-_base_ = ['daformer_conv1_mitb5.py']
+_base_ = ['daformer_conv1_mitb3.py']
 
 norm_cfg = dict(type='BN', requires_grad=True)
 model = dict(

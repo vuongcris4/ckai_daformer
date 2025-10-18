@@ -35,7 +35,17 @@ def set_random_seed(seed, deterministic=False):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-
+"""
+train_segmentor(model, dataset, cfg)
+├── build_dataloader(train)
+├── wrap model (DataParallel/DDP)
+├── optimizer = build_optimizer(model, cfg.optimizer)
+├── runner = build_runner(cfg.runner, ...)
+│   ├── register_training_hooks(...)
+│   ├── register_eval_hook(val)
+│   └── run(data_loaders, cfg.workflow)
+└── (resume/load checkpoint)
+"""
 def train_segmentor(model,
                     dataset,
                     cfg,

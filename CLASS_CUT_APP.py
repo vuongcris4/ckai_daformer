@@ -12,8 +12,8 @@ from mmseg.core.evaluation import get_classes, get_palette
 DEVICE = "cuda:0"  # hoặc "cpu"
 
 CONFIG = "work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/211108_1622_gta2cs_daformer_s0_7f24c.json"
-CKPT   = "work_dirs/gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0/latest.pth"
-
+# CKPT   = "work_dirs/gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0/latest.pth" #MiT-B3
+CKPT   = "work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/latest.pth" #MiT-B5
 PALETTE_NAME = 'cityscapes'
 CLASSES = get_classes(PALETTE_NAME)
 PALETTE = get_palette(PALETTE_NAME)
@@ -274,7 +274,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation -
 
         # --- CỘT 2: CHỈNH SỬA MASK & OUTPUT ---
         with gr.Column(scale=3):
-            gr.Markdown("### 5. Chỉnh sửa mask")
+            gr.Markdown("### 3. Chỉnh sửa mask")
             gr.Markdown("<p class='subtitle'>Dùng cọ TRẮNG để thêm, ĐEN để xoá</p>")
             mask_canvas = gr.Sketchpad(
                 show_label=False, # Ẩn tiêu đề cũ
@@ -293,16 +293,16 @@ with gr.Blocks(theme=gr.themes.Soft(), title="ClassCut - Semantic Segmentation -
                     show_label=False # Ẩn tiêu đề cũ
                 )
             
-            btn_apply = gr.Button("6. Áp dụng chỉnh sửa & Tạo file")
+            btn_apply = gr.Button("4. Áp dụng chỉnh sửa & Tạo file")
 
         # --- CỘT 3: OUTPUT & FILES ---
         with gr.Column(scale=3):
             info = gr.Markdown("...") # Giữ nguyên
 
-            gr.Markdown("### 4. Vật thể đã tách (RGBA)")
+            gr.Markdown("### 5. Vật thể đã tách (RGBA)")
             cut_out = gr.Image(show_label=False, height=320, interactive=False)
 
-            gr.Markdown("### 7. Output sau chỉnh sửa (Preview)")
+            gr.Markdown("### 6. Output sau chỉnh sửa (Preview)")
             edited_out = gr.Image(show_label=False, height=280, interactive=False)
             
             gr.Markdown("### Tệp đã xuất")

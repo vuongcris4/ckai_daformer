@@ -11,9 +11,29 @@ from .. import builder
 from ..builder import SEGMENTORS
 from .base import BaseSegmentor
 
-
+# extract_feat → decode_head.forward_train / forward_test → resize → softmax
+"""
+Đây là lớp chuẩn mà mọi segmentor (ví dụ DeepLabV3, PSPNet, UPerNet, DAFormer, DACS...) kế thừa.
+Nó định nghĩa toàn bộ pipeline huấn luyện & suy luận (train/test):
+extract_feat() - gọi backbone để lấy features.
+encode_decode() - backbone + decode head → segmentation map.
+forward_train() - gọi decode head (và aux head nếu có) → tính loss.
+inference(), slide_inference(), whole_inference() - logic test với crop hoặc toàn ảnh.
+simple_test(), aug_test() - wrapper tiện dụng khi test một ảnh hoặc TTA.
+    🔹 Thay đổi trong DAFormer
+DAFormer (và DACS) kế thừa lại EncoderDecoder để:
+Giữ nguyên cấu trúc backbone-decoder.
+Thêm logic huấn luyện UDA (class-mix, pseudo-label, feature distance, EMA teacher).
+Thêm seg_weight → truyền vào loss pixel-wise.
+"""
 @SEGMENTORS.register_module()
 class EncoderDecoder(BaseSegmentor):
+    """
+    Backbone trích xuất 4 cấp feature maps khác nhau. (stage 1->4)
+    Decode head (UnitHead) hpowj nhất các mức, tạo logit (đầu ra thô, chưa qua softmax) phân lớp.
+    
+    """
+
     """Encoder Decoder segmentors.
 
     EncoderDecoder typically consists of backbone, decode_head, auxiliary_head.
@@ -35,11 +55,11 @@ class EncoderDecoder(BaseSegmentor):
             assert backbone.get('pretrained') is None, \
                 'both backbone and segmentor set pretrained weight'
             backbone.pretrained = pretrained
-        self.backbone = builder.build_backbone(backbone)
+        self.backbone = builder.build_backbone(backbone)     # mit-b5
         if neck is not None:
-            self.neck = builder.build_neck(neck)
-        self._init_decode_head(decode_head)
-        self._init_auxiliary_head(auxiliary_head)
+            self.neck = builder.build_neck(neck)    # k có
+        self._init_decode_head(decode_head) #    DAFormerHead
+        self._init_auxiliary_head(auxiliary_head)   # null
 
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg

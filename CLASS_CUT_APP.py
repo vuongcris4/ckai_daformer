@@ -11,9 +11,14 @@ from mmseg.core.evaluation import get_classes, get_palette
 # ====== THIẾT LẬP CỦA BẠN ======
 DEVICE = "cuda:0"  # hoặc "cpu"
 
+#MiT-B3
+# CONFIG = "work_dirs/local-basic/251018_1059_gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0_48d3d/251018_1059_gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0_48d3d.json"
+# CKPT   = "work_dirs/gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0/latest.pth" 
+
+#MiT-B5
 CONFIG = "work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/211108_1622_gta2cs_daformer_s0_7f24c.json"
-# CKPT   = "work_dirs/gta2cs_uda_warm_fdthings_rcs_croppl_a999_daformer_mitb3_s0/latest.pth" #MiT-B3
-CKPT   = "work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/latest.pth" #MiT-B5
+CKPT   = "work_dirs/211108_1622_gta2cs_daformer_s0_7f24c/latest.pth"
+
 PALETTE_NAME = 'cityscapes'
 CLASSES = get_classes(PALETTE_NAME)
 PALETTE = get_palette(PALETTE_NAME)

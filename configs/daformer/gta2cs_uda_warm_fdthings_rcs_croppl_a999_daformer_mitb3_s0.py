@@ -26,7 +26,7 @@ uda = dict(
     alpha=0.999,    # teacher mượt hơn (update chậm)
     # Thing-Class Feature Distance
     imnet_feature_dist_lambda=0.005,        # BẬT FD với weight = 0.005
-    imnet_feature_dist_classes=[6, 7, 11, 12, 13, 14, 15, 16, 17, 18],  # “thing classes”
+    imnet_feature_dist_classes=[6, 7, 11, 12, 13, 14, 15, 16, 17, 18],  # “thing classes”  { 6: "person", 7: "rider", 11: "car", 12: "truck", 13: "bus", 14: "train", 15: "motorcycle", 16: "bicycle", 17: "traffic light", 18: "traffic sign", }
     imnet_feature_dist_scale_min_ratio=0.75,     # > r, trung bình onehot labels phải > r
     # Pseudo-Label Crop
     pseudo_weight_ignore_top=15,    # cắt bỏ pseudo ở 15 px top

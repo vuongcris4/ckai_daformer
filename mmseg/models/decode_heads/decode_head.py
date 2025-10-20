@@ -12,7 +12,13 @@ from mmseg.ops import resize
 from ..builder import build_loss
 from ..losses import accuracy
 
-
+"""
+BaseDecodeHead là lớp trừu tượng (abstract base class) mà mọi head khác (ví dụ FCNHead, UPerHead, DAFormerHead, v.v.) đều kế thừa để:
+Nhận đặc trưng từ backbone.
+Hợp nhất (resize/concat) nhiều tầng feature nếu cần.
+Tạo segmentation logits (qua conv_seg 1x1).
+Tính loss và accuracy chuẩn (CrossEntropyLoss theo pixel).
+"""
 class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
     """Base class for BaseDecodeHead.
 

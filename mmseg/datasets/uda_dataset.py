@@ -13,7 +13,16 @@ import torch
 from . import CityscapesDataset
 from .builder import DATASETS
 
-
+"""
+Hàm get_rcs_class_probs(data_root, temperature):
+Đọc sample_class_stats.json (tiền tính) → đếm tổng số pixel cho từng class trên tập source.
+Chuẩn hoá thành tần suất freq (x/∑x).
+Đổi sang “độ hiếm”: 1 - freq → lớp ít pixel ⇒ giá trị cao.
+Softmax với temperature: softmax((1 - freq)/T)
+T nhỏ ⇒ phân phối sắc, ưu tiên mạnh lớp hiếm.
+T lớn ⇒ phân phối phẳng hơn.
+Trả về: rcs_classes (danh sách id lớp) và rcs_classprob (xác suất chọn).
+"""
 def get_rcs_class_probs(data_root, temperature):
     with open(osp.join(data_root, 'sample_class_stats.json'), 'r') as of:
         sample_class_stats = json.load(of)
@@ -112,11 +121,25 @@ class UDADataset(object):
         }
 
     def __getitem__(self, idx):
-        if self.rcs_enabled:
+        if self.rcs_enabled:    # Nếu bật RCS → gọi get_rare_class_sample().
             return self.get_rare_class_sample()
         else:
-            s1 = self.source[idx // len(self.target)]
-            s2 = self.target[idx % len(self.target)]
+            s1 = self.source[idx // len(self.target)]   # Là một sample (ảnh + nhãn) lấy từ source dataset — ví dụ như GTA5.
+            """
+            {
+                'img': tensor ảnh source,
+                'gt_semantic_seg': tensor nhãn segmentation,
+                'img_metas': thông tin ảnh (kích thước, đường dẫn, v.v.)
+            }
+
+            """
+            s2 = self.target[idx % len(self.target)]    # Là một sample ảnh lấy từ target dataset — ví dụ như Cityscapes (không có nhãn).
+            """
+            {
+                'img': tensor ảnh target,
+                'img_metas': thông tin ảnh
+            }
+            """
             return {
                 **s1, 'target_img_metas': s2['img_metas'],
                 'target_img': s2['img']

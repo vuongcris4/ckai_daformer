@@ -157,6 +157,7 @@ def calc_grad_magnitude(grads, norm_type=2.0):
 - **`self.ema_model` (Teacher):** Là một object `EncoderDecoder` khác. Nó được tạo bởi chính `DACS`.
 - **`self.imnet_model` (Reference):** Là một object `EncoderDecoder` thứ ba. Nó cũng được tạo bởi `DACS`.
 """
+# DACS → UDADecorator → BaseSegmentor → BaseModule → nn.Module
 @UDA.register_module()
 class DACS(UDADecorator):
     """
@@ -164,7 +165,7 @@ class DACS(UDADecorator):
     """
 
     def __init__(self, **cfg):
-        super(DACS, self).__init__(**cfg)
+        super(DACS, self).__init__(**cfg)   # Gọi super().__init__(**cfg) → UDADecorator sẽ xây self.model (Student: EncoderDecoder).
         self.local_iter = 0
         self.max_iters = cfg['max_iters']   # từ config daformer đưa xuống.
         self.alpha = cfg['alpha']       # EMA, teacher update
@@ -174,7 +175,7 @@ class DACS(UDADecorator):
         self.fdist_lambda = cfg['imnet_feature_dist_lambda'] # Trọng số FD
         self.fdist_classes = cfg['imnet_feature_dist_classes']  # list thing classes
         self.fdist_scale_min_ratio = cfg['imnet_feature_dist_scale_min_ratio'] # > r, trung bình onehot labels phải > r
-        self.enable_fdist = self.fdist_lambda > 0   # trọng số FD > 0 thì bật FD
+        self.enable_fdist = self.fdist_lambda > 0   # trọng số FD > 0 thì bật FD. Tạo ImageNet model (tham chiếu) nếu enable_fdist: self.imnet_model = build_segmentor(...).
         self.mix = cfg['mix']   # class-mix
         self.blur = cfg['blur'] # augmentation blur trong strong_transform
         self.color_jitter_s = cfg['color_jitter_strength']
@@ -197,7 +198,7 @@ class DACS(UDADecorator):
         else:
             self.imnet_model = None
 
-    # teacher
+    # teacher, 
     def get_ema_model(self):
         return get_module(self.ema_model)
 
@@ -221,11 +222,12 @@ class DACS(UDADecorator):
             else:
                 mcp[i].data[:] = mp[i].data[:].clone()
 
+    # Cập nhật EMA mỗi iter: _update_ema(iter) với
     def _update_ema(self, iter):
         alpha_teacher = min(1 - 1 / (iter + 1), self.alpha) # iter = 0 -> alpha_teacher = 0, iter = lớn -> alpha_teacher = 1
         for ema_param, param in zip(self.get_ema_model().parameters(),
                                     self.get_model().parameters()):
-            if not param.data.shape:  # scalar tensor
+            if not param.data.shape:  # scalar tensor, EMA update
                 ema_param.data = \
                     alpha_teacher * ema_param.data + \
                     (1 - alpha_teacher) * param.data
@@ -234,6 +236,15 @@ class DACS(UDADecorator):
                     alpha_teacher * ema_param[:].data[:] + \
                     (1 - alpha_teacher) * param[:].data[:]
 
+    """
+    Vòng lặp train 1 iter: train_step(...)
+        Chuẩn hóa format mmcv runner:
+        optimizer.zero_grad()   
+        log_vars = self(**data_batch) → gọi forward của UDADecorator → đến DACS.forward_train(...).
+        optimizer.step()
+        Trả outputs = {log_vars, num_samples} (bỏ field 'loss' vì đã backward nội bộ).
+        Toàn bộ backward được thực hiện bên trong forward_train.
+    """
     def train_step(self, data_batch, optimizer, **kwargs):
         """The iteration step during training.
 
@@ -262,6 +273,14 @@ class DACS(UDADecorator):
         """
 
         optimizer.zero_grad()
+        """
+        train_step(...)
+            └─ log_vars = self(**data_batch)
+                    └─ __call__ (nn.Module)
+                        └─ UDADecorator.forward(...)
+                                └─ DACS.forward_train(img, img_metas, gt_semantic_seg,
+                                                        target_img, target_img_metas)
+        """
         log_vars = self(**data_batch)   # viết tắt để gọi phương thức forward() của class DACS. (gọi forward_train().)
         optimizer.step()    # cập nhật trọng số của self.model
 
@@ -286,41 +305,64 @@ class DACS(UDADecorator):
             # mmcv.print_log(f'fd mask: {mask.shape}', 'mmseg')
 
             # loại bỏ chiều 1
+            # Hàm .squueeze sẽ loại bỏ các chiều có kích thước bằng 1 trong tensor. squuze(1) loại bỏ chiều channel nếu nó = 1
+
+            # Chỉ tính Feature Distance trên những vùng được chọn
             pw_feat_dist = pw_feat_dist[mask.squeeze(1)]    # mask là một tensor boolean (True/False) có kích thước (Batch, Height, Width), nó đánh dấu True ở những pixel thuộc các lớp chúng ta quan tâm.
             # mmcv.print_log(f'fd masked: {pw_feat_dist.shape}', 'mmseg')
-        return torch.mean(pw_feat_dist)
+        return torch.mean(pw_feat_dist) # scalar
 
 
     def calc_feat_dist(self, img, gt, feat=None):
+        """
+        imnet_model.eval(); feat_imnet = imnet_model.extract_feat(img) (list feature maps).
+        Chọn layer lay = -1 (cuối).
+        Nếu có fdist_classes: downscale GT để cùng kích thước feature, tạo mask chỉ tính FD trên thing classes; ngược lại tính toàn ảnh.
+        masked_feat_dist(f_s, f_imnet, mask) = mean(||f_s - f_imnet||₂ pixel-wise).
+        Nhân hệ số λ = fdist_lambda và trả về loss/log.
+        """
         assert self.enable_fdist
         with torch.no_grad():
-            self.get_imnet_model().eval()
-            feat_imnet = self.get_imnet_model().extract_feat(img)
+            self.get_imnet_model().eval()   # lấy pretrained
+            feat_imnet = self.get_imnet_model().extract_feat(img)   # extract_feat() là hàm chỉ trả ra feature map từ backbone (encoder).
             feat_imnet = [f.detach() for f in feat_imnet]
-        lay = -1
+        lay = -1    # Lấy Feature map ở layer cuối cùng
         if self.fdist_classes is not None:
             fdclasses = torch.tensor(self.fdist_classes, device=gt.device)
             scale_factor = gt.shape[-1] // feat[lay].shape[-1]
+            # downscale GT để cùng kích thước feature
             gt_rescaled = downscale_label_ratio(gt, scale_factor,
                                                 self.fdist_scale_min_ratio,
                                                 self.num_classes,
                                                 255).long().detach()
             fdist_mask = torch.any(gt_rescaled[..., None] == fdclasses, -1)
+            # Tính Fimagenet - F layer cuối
             feat_dist = self.masked_feat_dist(feat[lay], feat_imnet[lay],
                                               fdist_mask)
             self.debug_fdist_mask = fdist_mask
             self.debug_gt_rescale = gt_rescaled
         else:
             feat_dist = self.masked_feat_dist(feat[lay], feat_imnet[lay])
-        feat_dist = self.fdist_lambda * feat_dist
+        feat_dist = self.fdist_lambda * feat_dist   # λ * Lfd
         feat_loss, feat_log = self._parse_losses(
             {'loss_imnet_feat_dist': feat_dist})
         feat_log.pop('loss', None)
         return feat_loss, feat_log
 
 
-    def forward_train(self, img, img_metas, gt_semantic_seg, target_img,
-                      target_img_metas):
+    def forward_train(self, img, img_metas, gt_semantic_seg, target_img, target_img_metas):
+        """
+        Input:
+            ├─ img (source images có nhãn thật)
+            ├─ gt_semantic_seg (mask nhãn thật)
+            ├─ target_img (ảnh target không có nhãn)
+            └─ img_metas / target_img_metas (thông tin ảnh)
+
+            Output:
+            └─ log_vars: dictionary chứa các giá trị loss để log
+        """
+        # Source supervised → Feature Distance (FD) → Pseudo Label (Teacher) → ClassMix (Mix source & target) → Loss tổng hợp
+
         """Forward function for training.
 
         Args:
@@ -340,17 +382,24 @@ class DACS(UDADecorator):
         batch_size = img.shape[0]
         dev = img.device
 
-        # Init/update ema model
-        if self.local_iter == 0:
+        # Init/update ema model, Khởi tạo và cập nhật EMA Teacher
+        if self.local_iter == 0:    # Init / Update EMA
             self._init_ema_weights()
             # assert _params_equal(self.get_ema_model(), self.get_model())
-
+        
+        # Cập nhật EMA model sau mỗi iter
         if self.local_iter > 0:
             self._update_ema(self.local_iter)
             # assert not _params_equal(self.get_ema_model(), self.get_model())
             # assert self.get_ema_model().training
 
-        means, stds = get_mean_std(img_metas, dev)
+        # Chuẩn bị augmentation
+        """
+        Thiết lập tham số để augment ảnh khi mix:
+        color_jitter, blur → làm mạnh hơn sự khác biệt giữa source và target.
+        mean, std → dùng để denormalize khi hiển thị.
+        """
+        means, stds = get_mean_std(img_metas, dev)  # Các thông số của img_metas?
         strong_parameters = {
             'mix': None,
             'color_jitter': random.uniform(0, 1),
@@ -362,7 +411,9 @@ class DACS(UDADecorator):
         }
 
         # Train on source images
-        clean_losses = self.get_model().forward_train(
+        # Huấn luyện supervised trên ảnh source
+        # forward_train của student trả dict loss + (tuỳ chọn) features.
+        clean_losses = self.get_model().forward_train(  # Loss source -> EncoderDecoder.forward_train(...) -> feats = self.extract_feat(img) -> self._decode_head_forward_train(feats, img_metas, gt)
             img, img_metas, gt_semantic_seg, return_feat=True)
         src_feat = clean_losses.pop('features')
         clean_loss, clean_log_vars = self._parse_losses(clean_losses)
@@ -380,7 +431,7 @@ class DACS(UDADecorator):
         if self.enable_fdist:
             feat_loss, feat_log = self.calc_feat_dist(img, gt_semantic_seg,
                                                       src_feat)
-            feat_loss.backward()
+            feat_loss.backward()    # Loss FD
             log_vars.update(add_prefix(feat_log, 'src'))
             if self.print_grad_magnitude:
                 params = self.get_model().backbone.parameters()
@@ -397,14 +448,16 @@ class DACS(UDADecorator):
                 m.training = False
             if isinstance(m, DropPath):
                 m.training = False
+
+        # logit sau khi đi qua teacher để sinh Pseudo-label
         ema_logits = self.get_ema_model().encode_decode(
             target_img, target_img_metas)
 
         ema_softmax = torch.softmax(ema_logits.detach(), dim=1)
-        pseudo_prob, pseudo_label = torch.max(ema_softmax, dim=1)
-        ps_large_p = pseudo_prob.ge(self.pseudo_threshold).long() == 1
+        pseudo_prob, pseudo_label = torch.max(ema_softmax, dim=1)   # lấy max lớn nhất của mỗi class
+        ps_large_p = pseudo_prob.ge(self.pseudo_threshold).long() == 1  # Nếu lớn hơn ngưỡng thì = 1, ngược lại = 0
         ps_size = np.size(np.array(pseudo_label.cpu()))
-        pseudo_weight = torch.sum(ps_large_p).item() / ps_size
+        pseudo_weight = torch.sum(ps_large_p).item() / ps_size  # Tính tỉ lệ M things, hệ số bình quân tin cậys
         pseudo_weight = pseudo_weight * torch.ones(
             pseudo_prob.shape, device=dev)
 
@@ -418,8 +471,14 @@ class DACS(UDADecorator):
         gt_pixel_weight = torch.ones((pseudo_weight.shape), device=dev)
 
         # Apply mixing
+        """
+        Mask M là hợp (union) các lớp được chọn từ source:
+        Pixel thuộc M → lấy từ source (ảnh + nhãn GT).
+        Pixel không thuộc M → lấy từ target (ảnh + pseudo-label).
+        Đồng thời, trộn cả trọng số pixel (giữ band ignore, confidence).
+        """
         mixed_img, mixed_lbl = [None] * batch_size, [None] * batch_size
-        mix_masks = get_class_masks(gt_semantic_seg)
+        mix_masks = get_class_masks(gt_semantic_seg)    # union class mask từ source
 
         for i in range(batch_size):
             strong_parameters['mix'] = mix_masks[i]
@@ -434,6 +493,9 @@ class DACS(UDADecorator):
         mixed_lbl = torch.cat(mixed_lbl)
 
         # Train on mixed images
+        """ Supervised trên ảnh trộn
+        Train student trên batch trộn, với label trộn và pixel-weight.
+        """
         mix_losses = self.get_model().forward_train(
             mixed_img, img_metas, mixed_lbl, pseudo_weight, return_feat=True)
         mix_losses.pop('features')

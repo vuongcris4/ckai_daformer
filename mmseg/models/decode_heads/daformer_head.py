@@ -67,19 +67,19 @@ class ASPPWrapper(nn.Module):
     def forward(self, x):
         """Forward function."""
         aspp_outs = []
-        if self.image_pool is not None:
+        if self.image_pool is not None: # nhánh global context
             aspp_outs.append(
                 resize(
                     self.image_pool(x),
                     size=x.size()[2:],
                     mode='bilinear',
                     align_corners=self.align_corners))
-        if self.context_layer is not None:
+        if self.context_layer is not None:  # nhánh context phụ (tuỳ chọn)
             aspp_outs.append(self.context_layer(x))
-        aspp_outs.extend(self.aspp_modules(x))
-        aspp_outs = torch.cat(aspp_outs, dim=1)
+        aspp_outs.extend(self.aspp_modules(x))  # các nhánh dilation d∈{1,6,12,18}
+        aspp_outs = torch.cat(aspp_outs, dim=1) # ghép kênh tất cả nhánh
 
-        output = self.bottleneck(aspp_outs)
+        output = self.bottleneck(aspp_outs) # Conv 3×3 trộn + giảm kênh → F_out
         return output
 
 
@@ -155,21 +155,24 @@ class DAFormerHead(BaseDecodeHead):
         self.fuse_layer = build_layer(
             sum(embed_dims), self.channels, **fusion_cfg)
 
-    def forward(self, inputs):
+    def forward(self, inputs):  # nhận inputs = [F1, F2, F3, F4]
         x = inputs
-        n, _, h, w = x[-1].shape
+        n, _, h, w = x[-1].shape    
         # for f in x:
         #     mmcv.print_log(f'{f.shape}', 'mmseg')
 
-        os_size = x[0].size()[2:]
+        os_size = x[0].size()[2:]    # = size của F1 = (H/4, W/4)
         _c = {}
         for i in self.in_index:
             # mmcv.print_log(f'{i}: {x[i].shape}', 'mmseg')
             _c[i] = self.embed_layers[str(i)](x[i])
             if _c[i].dim() == 3:
+                # mỗi _c[i] có dạng (B, C_e, H_i, W_i)
                 _c[i] = _c[i].permute(0, 2, 1).contiguous()\
                     .reshape(n, -1, x[i].shape[2], x[i].shape[3])
             # mmcv.print_log(f'_c{i}: {_c[i].shape}', 'mmseg')
+
+            # Resize mỗi tầng về (H/4, W/4):
             if _c[i].size()[2:] != os_size:
                 # mmcv.print_log(f'resize {i}', 'mmseg')
                 _c[i] = resize(
@@ -178,7 +181,7 @@ class DAFormerHead(BaseDecodeHead):
                     mode='bilinear',
                     align_corners=self.align_corners)
 
-        x = self.fuse_layer(torch.cat(list(_c.values()), dim=1))
-        x = self.cls_seg(x)
+        x = self.fuse_layer(torch.cat(list(_c.values()), dim=1))    # concatenate theo chiều channels   # trả về F_out: (B, self.channels, H/4, W/4)
+        x = self.cls_seg(x) # Conv 1×1: self.channels → N_cls
 
-        return x
+        return x    # x chính là Z: (B, N_cls, Hx4, Wx4)
